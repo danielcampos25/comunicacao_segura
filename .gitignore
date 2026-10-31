@@ -1,0 +1,16 @@
+# ESP-IDF build
+build/
+sdkconfig.old
+dependencies.lock
+
+# Configurações locais
+.vscode/
+.codex/
+
+# Arquivos temporários
+*.log
+*.tmp
+
+# Arquivos temporários do Simplicity Studio
+C:\\Users\\danie\\AppData\\Local\\Temp\\silabs_extension\\
+*.code-workspace
