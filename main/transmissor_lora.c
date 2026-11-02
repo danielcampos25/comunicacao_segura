@@ -2,9 +2,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
-
+#include "driver/usb_serial_jtag.h"
 #include "psa/crypto.h"
 #include "ra01s.h"
+#include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/portmacro.h"
 
 #define KEY_SIZE        16
 #define NONCE_SIZE      12
@@ -32,6 +35,59 @@ static void print_hex(const char *label,
     printf("\n");
 }
 
+static int read_serial_message(char *buffer, size_t buffer_size)
+{
+    size_t index = 0;
+    uint8_t received_char;
+
+    while (1) {
+
+        int bytes_read = usb_serial_jtag_read_bytes(
+            &received_char,
+            1,
+            portMAX_DELAY
+        );
+
+        if (bytes_read <= 0) {
+            continue;
+        }
+
+        // Enter encerra a mensagem.
+        if (received_char == '\r' || received_char == '\n') {
+
+            if (index == 0) {
+                continue;
+            }
+
+            buffer[index] = '\0';
+
+            printf("\n");
+            return (int)index;
+        }
+
+        // Backspace permite apagar caracteres.
+        if (received_char == '\b' || received_char == 127) {
+
+            if (index > 0) {
+                index--;
+                printf("\b \b");
+            }
+
+            continue;
+        }
+
+        // Armazenar somente caracteres imprimíveis.
+        if (received_char >= 32 && received_char <= 126) {
+
+            if (index < buffer_size - 1) {
+                buffer[index++] = (char)received_char;
+                printf("%c", received_char);
+            }
+        }
+    }
+}
+
+
 static uint32_t lora_frequency_hz(void)
 {
 #if CONFIG_433MHZ
@@ -49,36 +105,56 @@ static uint32_t lora_frequency_hz(void)
 
 void app_main(void)
 {
-    static const uint8_t message[] =
-        "Mensagem secreta via LoRa!";
 
+        // Inicializa o driver USB Serial/JTAG para receber mensagens.
+    usb_serial_jtag_driver_config_t usb_config =
+        USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+
+    ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&usb_config));
+
+    printf("\nDriver USB Serial/JTAG inicializado.\n");
+    char message[MAX_CIPHER_SIZE];
     uint8_t nonce[NONCE_SIZE];
     uint8_t ciphertext[MAX_CIPHER_SIZE];
-    uint8_t plaintext[MAX_CIPHER_SIZE];
+    uint8_t lora_payload[LORA_PAYLOAD_SIZE];
 
     size_t ciphertext_len = 0;
-    size_t plaintext_len = 0;
+    size_t message_len = 0;
 
     psa_status_t status;
     psa_key_id_t key_id = 0;
-    uint8_t lora_payload[LORA_PAYLOAD_SIZE];
 
-    printf("\n=== TESTE DE COMUNICACAO SEGURA ===\n");
+    printf("\n=== TRANSMISSOR LORA COM AES-GCM ===\n");
 
-    // 1. Inicializar o transceptor e verificar a comunicacao SPI.
+    // 1. Inicializar o transceptor LoRa.
     LoRaInit();
-    // O Wio-SX1262 usa o TCXO controlado pelo DIO3.
-    int16_t lora_status = LoRaBegin(lora_frequency_hz(), 17, 3.3f, true);
+
+    int16_t lora_status = LoRaBegin(
+        lora_frequency_hz(),
+        17,
+        3.3f,
+        true
+    );
+
     if (lora_status != ERR_NONE) {
-        printf("ERRO ao inicializar o SX126x (%d)\n", lora_status);
+        printf("ERRO ao inicializar o SX126x (%d)\n",
+               lora_status);
         return;
     }
 
-    LoRaConfig(7, SX126X_LORA_BW_125_0, SX126X_LORA_CR_4_5,
-               8, 0, true, false);
+    LoRaConfig(
+        7,
+        SX126X_LORA_BW_125_0,
+        SX126X_LORA_CR_4_5,
+        8,
+        0,
+        true,
+        false
+    );
+
     LoRaDebugPrint(true);
 
-    // 2. Inicializar a biblioteca criptografica.
+    // 2. Inicializar a biblioteca criptográfica.
     status = psa_crypto_init();
 
     if (status != PSA_SUCCESS) {
@@ -86,23 +162,12 @@ void app_main(void)
         return;
     }
 
-    // 3. Gerar nonce aleatorio para esta mensagem.
-    status = psa_generate_random(nonce, sizeof(nonce));
-
-    if (status != PSA_SUCCESS) {
-        printf("ERRO ao gerar nonce (%ld)\n", (long)status);
-        return;
-    }
-
-    // 4. Configurar uma chave AES de 128 bits.
+    // 3. Importar a chave AES-128.
     psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
 
     psa_set_key_type(&attributes, PSA_KEY_TYPE_AES);
     psa_set_key_bits(&attributes, 128);
-    psa_set_key_usage_flags(
-        &attributes,
-        PSA_KEY_USAGE_ENCRYPT | PSA_KEY_USAGE_DECRYPT
-    );
+    psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_ENCRYPT);
     psa_set_key_algorithm(&attributes, PSA_ALG_GCM);
 
     status = psa_import_key(
@@ -119,105 +184,87 @@ void app_main(void)
         return;
     }
 
-    printf("Criptografia inicializada.\n");
-    printf("Mensagem original: %s\n", (const char *)message);
+    printf("\nCriptografia inicializada.\n");
+    printf("Digite uma mensagem no Monitor Serial.\n");
 
-    // 5. Criptografar e autenticar a mensagem.
-    status = psa_aead_encrypt(
-        key_id,
-        PSA_ALG_GCM,
-        nonce,
-        sizeof(nonce),
-        NULL,
-        0,
-        message,
-        sizeof(message) - 1,
-        ciphertext,
-        sizeof(ciphertext),
-        &ciphertext_len
-    );
+    
+    // 4. Transmitir mensagens automaticamente a cada 10 segundos.
+    while (1) {
 
-    if (status != PSA_SUCCESS) {
-        printf("ERRO na criptografia (%ld)\n", (long)status);
-        psa_destroy_key(key_id);
-        return;
+        const char *automatic_message = "transmissor conectado";
+
+        message_len = strlen(automatic_message);
+        memcpy(message, automatic_message, message_len + 1);
+
+        printf("\nMensagem original: %s\n", message);
+
+        // 5. Gerar um nonce novo para cada mensagem.
+        status = psa_generate_random(nonce, sizeof(nonce));
+
+        if (status != PSA_SUCCESS) {
+            printf("ERRO ao gerar nonce (%ld)\n", (long)status);
+            vTaskDelay(pdMS_TO_TICKS(10000));
+            continue;
+        }
+
+        // 6. Criptografar e autenticar a mensagem.
+        ciphertext_len = 0;
+
+        status = psa_aead_encrypt(
+            key_id,
+            PSA_ALG_GCM,
+            nonce,
+            sizeof(nonce),
+            NULL,
+            0,
+            (const uint8_t *)message,
+            message_len,
+            ciphertext,
+            sizeof(ciphertext),
+            &ciphertext_len
+        );
+
+        if (status != PSA_SUCCESS) {
+            printf("ERRO na criptografia (%ld)\n", (long)status);
+            vTaskDelay(pdMS_TO_TICKS(10000));
+            continue;
+        }
+
+        // 7. Montar o pacote: nonce + ciphertext + tag.
+        if (sizeof(nonce) + ciphertext_len > sizeof(lora_payload)) {
+            printf("ERRO: payload LoRa excede o buffer.\n");
+            vTaskDelay(pdMS_TO_TICKS(10000));
+            continue;
+        }
+
+        memcpy(lora_payload, nonce, sizeof(nonce));
+        memcpy(lora_payload + sizeof(nonce), ciphertext, ciphertext_len);
+
+        printf("\n--- TRANSMISSAO LORA ---\n");
+
+        print_hex("Nonce: ", nonce, sizeof(nonce));
+        print_hex("Dados cifrados + tag: ", ciphertext, ciphertext_len);
+
+        // 8. Transmitir o pacote LoRa.
+        if (!LoRaSend(
+                lora_payload,
+                (int16_t)(sizeof(nonce) + ciphertext_len),
+                SX126x_TXMODE_SYNC
+            )) {
+
+            printf("ERRO: transmissao LoRa falhou.\n");
+
+        } else {
+
+            printf(
+                "SUCESSO: pacote LoRa transmitido (%u bytes).\n",
+                (unsigned)(sizeof(nonce) + ciphertext_len)
+            );
+        }
+
+        printf("Proxima transmissao em 10 segundos...\n");
+
+        vTaskDelay(pdMS_TO_TICKS(10000));
     }
 
-    printf("\n--- TRANSMISSAO LORA ---\n");
-    print_hex("Nonce: ", nonce, sizeof(nonce));
-    print_hex("Dados cifrados + tag: ", ciphertext, ciphertext_len);
-
-    // O receptor precisa do nonce e do ciphertext+tag no mesmo pacote.
-    if (sizeof(nonce) + ciphertext_len > sizeof(lora_payload)) {
-        printf("ERRO: payload LoRa excede o buffer configurado\n");
-        psa_destroy_key(key_id);
-        return;
-    }
-    memcpy(lora_payload, nonce, sizeof(nonce));
-    memcpy(lora_payload + sizeof(nonce), ciphertext, ciphertext_len);
-
-    if (!LoRaSend(lora_payload, (int16_t)(sizeof(nonce) + ciphertext_len),
-                  SX126x_TXMODE_SYNC)) {
-        printf("ERRO: transmissao LoRa falhou\n");
-        psa_destroy_key(key_id);
-        return;
-    }
-    printf("Pacote LoRa transmitido (%u bytes).\n",
-           (unsigned)(sizeof(nonce) + ciphertext_len));
-
-    // 6. Descriptografar e verificar a autenticidade localmente.
-    status = psa_aead_decrypt(
-        key_id,
-        PSA_ALG_GCM,
-        nonce,
-        sizeof(nonce),
-        NULL,
-        0,
-        ciphertext,
-        ciphertext_len,
-        plaintext,
-        sizeof(plaintext),
-        &plaintext_len
-    );
-
-    if (status != PSA_SUCCESS) {
-        printf("ERRO na autenticacao/descriptografia (%ld)\n",
-               (long)status);
-        psa_destroy_key(key_id);
-        return;
-    }
-
-    printf("\n--- RECEPCAO SIMULADA ---\n");
-    printf("Mensagem recuperada: %.*s\n",
-           (int)plaintext_len, (const char *)plaintext);
-
-    // 6. Confirmar que o texto recuperado e o original sao iguais
-    if (plaintext_len == sizeof(message) - 1 &&
-        memcmp(plaintext, message, plaintext_len) == 0) {
-        printf("\nSUCESSO: mensagem recuperada corretamente!\n");
-    } else {
-        printf("\nFALHA: mensagens diferentes!\n");
-    }
-
-    printf("\n--- TESTE DE ADULTERACAO ---\n");
-
-    ciphertext[0] ^= 0x01;
-
-    status = psa_aead_decrypt(
-        key_id, PSA_ALG_GCM,
-        nonce, sizeof(nonce),
-        NULL, 0,
-        ciphertext, ciphertext_len,
-        plaintext, sizeof(plaintext),
-        &plaintext_len
-    );
-
-    if (status != PSA_SUCCESS) {
-        printf("SUCESSO: adulteracao detectada!\n");
-        printf("Codigo de erro PSA: %ld\n", (long)status);
-    } else {
-        printf("FALHA: mensagem adulterada foi aceita!\n");
-    }
-
-    psa_destroy_key(key_id);
 }

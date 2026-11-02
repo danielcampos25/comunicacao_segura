@@ -1,0 +1,10 @@
+menu "Configuracao da aplicacao"
+
+    config APP_MODE_RECEIVER
+        bool "Compilar firmware receptor LoRa"
+        default n
+        help
+            Se ativado, compila o firmware receptor.
+            Se desativado, compila o firmware transmissor.
+
+endmenu
