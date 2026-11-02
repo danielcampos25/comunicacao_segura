@@ -751,23 +751,6 @@ um contador monotônico e uma política explícita para mensagens repetidas.
    - documentar o limite real de caracteres;
    - rejeitar mensagens vazias e longas com diagnóstico claro.
 
-## 15. Checklist de bancada
-
-Antes de investigar o software, confirme:
-
-- [ ] há uma antena correta em cada módulo;
-- [ ] os módulos recebem alimentação adequada;
-- [ ] o terra é comum;
-- [ ] SPI, NSS, RESET e BUSY estão nos GPIOs corretos;
-- [ ] nenhuma função de flash/PSRAM/USB conflita com esses GPIOs;
-- [ ] os dois rádios são compatíveis com o driver SX126x;
-- [ ] a frequência é a mesma nos dois dispositivos;
-- [ ] SF, bandwidth, coding rate, preâmbulo, CRC e IQ são iguais;
-- [ ] a chave AES é igual nos dois firmwares;
-- [ ] a placa receptora foi compilada com `APP_MODE_RECEIVER`;
-- [ ] o log do receptor mostra `Aguardando pacotes LoRa...`;
-- [ ] o transmissor mostra `TX_DONE`/transmissão bem-sucedida;
-- [ ] o pacote recebido tem ao menos 12 bytes de nonce e 16 bytes de tag.
 
 ## 16. Resumo técnico
 
